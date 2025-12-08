@@ -4,11 +4,52 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import * as path from 'path';
 // Custom lightweight reverse proxy using fetch
+import * as promClient from 'prom-client';
 
 const app = Fastify({ logger: true });
 const port = Number(process.env.PORT || 3500);
 
 // Fastify already parses JSON by default, no need to add custom parser
+
+// Prometheus metrics
+const metricsRegistry = new promClient.Registry();
+metricsRegistry.setDefaultLabels({ service: 'gateway' });
+promClient.collectDefaultMetrics({ register: metricsRegistry });
+const httpRequestsTotal = new promClient.Counter({
+  name: 'http_requests_total',
+  help: 'Total number of HTTP requests',
+  labelNames: ['method','route','status_code'] as const,
+  registers: [metricsRegistry],
+});
+const httpRequestDurationSeconds = new promClient.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['method','route','status_code'] as const,
+  buckets: [0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2,5],
+  registers: [metricsRegistry],
+});
+app.addHook('onRequest', (req: any, _reply: any, done: any) => {
+  req._metricsStart = process.hrtime.bigint();
+  done();
+});
+app.addHook('onResponse', (req: any, reply: any, done: any) => {
+  try {
+    const start = req._metricsStart as bigint | undefined;
+    const route = (req.routeOptions && req.routeOptions.url) || req.url || '';
+    const method = (req.method || 'GET').toUpperCase();
+    const status = String(reply.statusCode || 0);
+    httpRequestsTotal.inc({ method, route, status_code: status });
+    if (start) {
+      const ns = Number(process.hrtime.bigint() - start);
+      httpRequestDurationSeconds.observe({ method, route, status_code: status }, ns / 1e9);
+    }
+  } catch {}
+  done();
+});
+app.get('/metrics', async (_req, reply) => {
+  reply.header('content-type', metricsRegistry.contentType);
+  return metricsRegistry.metrics();
+});
 
 const targets = {
   auth: process.env.AUTH_URL || 'http://127.0.0.1:3001',

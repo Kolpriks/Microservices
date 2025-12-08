@@ -4,6 +4,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import { randomUUID } from "crypto";
+import * as promClient from "prom-client";
 
 const app = Fastify({ logger: true });
 const port = Number(process.env.PORT || 3009);
@@ -13,6 +14,46 @@ app.register(multipart as any, {
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB
   },
+});
+
+// Prometheus metrics
+const metricsRegistry = new promClient.Registry();
+metricsRegistry.setDefaultLabels({ service: "images" });
+promClient.collectDefaultMetrics({ register: metricsRegistry });
+const httpRequestsTotal = new promClient.Counter({
+  name: "http_requests_total",
+  help: "Total number of HTTP requests",
+  labelNames: ["method","route","status_code"] as const,
+  registers: [metricsRegistry],
+});
+const httpRequestDurationSeconds = new promClient.Histogram({
+  name: "http_request_duration_seconds",
+  help: "Duration of HTTP requests in seconds",
+  labelNames: ["method","route","status_code"] as const,
+  buckets: [0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2,5],
+  registers: [metricsRegistry],
+});
+app.addHook('onRequest', (req: any, _reply: any, done: any) => {
+  req._metricsStart = process.hrtime.bigint();
+  done();
+});
+app.addHook('onResponse', (req: any, reply: any, done: any) => {
+  try {
+    const start = req._metricsStart as bigint | undefined;
+    const route = (req.routeOptions && req.routeOptions.url) || (req.url || '');
+    const method = (req.method || 'GET').toUpperCase();
+    const status = String(reply.statusCode || 0);
+    httpRequestsTotal.inc({ method, route, status_code: status });
+    if (start) {
+      const ns = Number(process.hrtime.bigint() - start);
+      httpRequestDurationSeconds.observe({ method, route, status_code: status }, ns / 1e9);
+    }
+  } catch {}
+  done();
+});
+app.get("/metrics", async (_req, reply) => {
+  reply.header("content-type", metricsRegistry.contentType);
+  return metricsRegistry.metrics();
 });
 
 // Простое хранилище изображений в памяти (в продакшене использовать S3 или файловую систему)

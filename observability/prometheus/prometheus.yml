@@ -1,0 +1,21 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'microservices'
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - auth:3501
+          - profile:3502
+          - inventory:3504
+          - product-order:3505
+          - payments:3506
+          - shipping:3507
+          - notifications:3508
+          - images:3509
+          - search:3510
+          - gateway:3500
+
+
